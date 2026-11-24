@@ -43,6 +43,32 @@
     }
     return out;
   }
-  const api = { extract };
+
+  /* ---- Handover logic: changes since last saved shift + checklist (only compares data that was actually saved) ---- */
+  const RANK = { Improving: 0, Stable: 1, Deteriorating: 2, Critical: 3 };
+  const KEYS = ['pH', 'pCO2', 'pO2', 'HCO3', 'Lactate', 'Hb', 'WBC', 'Plt', 'Na', 'K', 'Cr', 'Urea', 'Glucose', 'CRP', 'Bili', 'INR'];
+  const lines = t => String(t || '').split('\n').map(s => s.trim()).filter(Boolean);
+  function changes(cur, prev, tasks, since) {
+    if (!prev) return null;
+    const out = [], add = (type, text) => out.push({ type, text }), ch = cur.h || {}, ph = prev.h || {};
+    if (cur.dx && cur.dx !== (prev.dx || '')) add('New Diagnosis', (prev.dx ? prev.dx + ' -> ' : '') + cur.dx);
+    if (cur.cs && prev.cs && cur.cs !== prev.cs) add(RANK[cur.cs] > RANK[prev.cs] ? 'Clinical Deterioration' : 'Improvement in Clinical Status', prev.cs + ' -> ' + cur.cs);
+    else if (cur.cs && !prev.cs) add('Clinical Status', cur.cs);
+    const pm = lines(ph.meds), cm = lines(ch.meds);
+    cm.filter(x => !pm.includes(x)).forEach(x => add('New Medication', x));
+    pm.filter(x => !cm.includes(x)).forEach(x => add('Medication Discontinued', x));
+    for (const k of KEYS) { const a = (cur.l || {})[k], b = (prev.l || {})[k]; if (a && a !== b) add('New Laboratory Results', k + ' ' + a + (b ? ' (was ' + b + ')' : '')); }
+    const txt = (k, type) => { const a = String(ch[k] || '').trim(); if (a && a !== String(ph[k] || '').trim()) add(type, a); };
+    txt('resp', 'Changes in Ventilator / Respiratory Settings'); txt('imaging', 'New Imaging Findings'); txt('procedures', 'New Procedures'); txt('events', 'Significant Clinical Events');
+    (tasks || []).forEach(t => { if (t.created > since) add('New Task', t.text); if (t.done && t.doneAt > since) add('Task Completed', t.text); });
+    return out;
+  }
+  function checklist(p, tasks) {
+    const h = p.h || {}, l = p.l || {}, v = p.v || {}, has = x => String(x || '').trim().length > 0;
+    return [['Patient Diagnosis', has(p.dx)], ['Current Clinical Condition', has(p.cs)], ['Allergies', has(p.allergies)], ['Current Medications', has(h.meds)],
+      ['Airway / Respiratory Support', has(h.resp)], ['Hemodynamic Status', has(h.cv) || has(v.bp)], ['Important Laboratory Results', Object.values(l).some(has)],
+      ['Active Problems', has(h.problems)], ['Pending Tasks', (tasks || []).length > 0], ['Management Plan', has(h.plan)]].map(([k, ok]) => ({ k, ok }));
+  }
+  const api = { extract, changes, checklist };
   if (typeof module !== 'undefined') module.exports = api; else root.Parser = api;
 })(typeof self !== 'undefined' ? self : this);

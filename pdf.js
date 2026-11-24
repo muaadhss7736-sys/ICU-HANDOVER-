@@ -23,6 +23,7 @@
     for (const it of items) {
       const sz = it.s || 10, lead = sz * 1.4, ind = it.i || 0;
       const max = Math.max(10, Math.floor((W - 2 * M - ind) / (sz * (it.b ? 0.56 : 0.5))));
+      if (it.pb && cur().length) { pages.push([]); y = H - M; }
       if (it.gap) y -= it.gap;
       if (it.t) for (const ln of wrap(clean(it.t), max)) {
         if (y - lead < FH) { pages.push([]); y = H - M; }

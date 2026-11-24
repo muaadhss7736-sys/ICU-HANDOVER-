@@ -1,4 +1,4 @@
-const CACHE = 'ibn-sina-icu-v3';
+const CACHE = 'ibn-sina-icu-v4';
 const CORE = ['./', 'index.html', 'styles.css', 'app.js', 'parser.js', 'pdf.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png'];
 const OCR = ['vendor/tesseract/tesseract.min.js', 'vendor/tesseract/worker.min.js', 'vendor/tesseract/tesseract-core.wasm.js',
