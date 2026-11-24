@@ -100,7 +100,25 @@ function reportPDF(entries, meta, filename) {
     it.push({ rule: 1, gap: 2 });
   });
   if (!entries.length) it.push({ t: 'No patients selected.', s: 10 });
-  download(PDFW.makePDF(it, [{ t: 'Developed by' }, { t: DEV.name, b: 1 }, { t: 'Email: ' + DEV.email }, { t: 'Phone: ' + DEV.phone }]), filename, 'application/pdf');
+  const foot = [{ t: 'Developed by' }, { t: DEV.name, b: 1 }, { t: 'Email: ' + DEV.email }, { t: 'Phone: ' + DEV.phone }];
+  pdfModal(PDFW.makePDF(it, foot), filename, it.concat(foot).filter(x => x.t).map(x => x.t).join('\n'));
+}
+function copyText(text) {
+  const fallback = () => { const a = document.createElement('textarea'); a.value = text; a.style.cssText = 'position:fixed;opacity:0'; document.body.append(a); a.select(); let ok = false; try { ok = document.execCommand('copy'); } catch (e) { } a.remove(); return ok; };
+  return navigator.clipboard && navigator.clipboard.writeText ? navigator.clipboard.writeText(text).then(() => true, fallback) : Promise.resolve(fallback());
+}
+function pdfModal(bytes, name, text) {
+  const m = modal(`<h3>PDF report ready</h3><p class="small muted">${esc(name)}</p><div class="row"><button class="btn gold" id="psh">Share / Send</button><button class="btn" id="psv">Save PDF</button><button class="btn alt" id="pcp">Copy text</button><button class="btn ghost" id="pcl">Close</button></div>
+  <p class="small muted">Share opens WhatsApp, email, etc. Copy text puts the report as plain text on the clipboard.</p>`);
+  const save = () => download(bytes, name, 'application/pdf'), native = () => window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform();
+  $('#psv', m).onclick = save; $('#pcl', m).onclick = () => m.close();
+  $('#psh', m).onclick = async () => {
+    if (native()) return save(); // the Android share sheet offers both send and save
+    const f = new File([bytes], name, { type: 'application/pdf' });
+    try { if (navigator.canShare && navigator.canShare({ files: [f] })) await navigator.share({ files: [f], title: name }); else { await save(); toast('Sharing is not supported here — PDF saved instead'); } }
+    catch (e) { if (e.name !== 'AbortError') { await save(); toast('Share failed — PDF saved instead'); } }
+  };
+  $('#pcp', m).onclick = async () => toast((await copyText(text)) ? 'Report text copied' : 'Copy failed');
 }
 
 /* ---------- OCR ---------- */
@@ -161,7 +179,12 @@ async function profileView(id) {
   const inp = (path, label, val, t = 'text') => `<div><label>${label}</label><input type="${t}" data-f="${path}" value="${esc(val)}"></div>`;
   const trow = t => { const od = !t.done && t.due && new Date(t.due).getTime() < Date.now(); return `<div class="doc"><input type="checkbox" data-tk="${t.id}" ${t.done ? 'checked' : ''} style="width:24px;height:24px"><div class="small ${t.done ? 'muted' : ''}"><b>${esc(t.text)}</b><br><span class="chip ${t.priority === 'High' ? 'red' : t.priority === 'Low' ? 'gray' : ''}">${t.priority}</span>${od ? '<span class="chip red">OVERDUE</span>' : ''}${t.due ? ' Due ' + fmt(new Date(t.due).getTime()) : ''}${t.carried ? ' · carried ×' + t.carried : ''}${t.done ? ' · done ' + fmt(t.doneAt) : ''}</div><button class="btn sm ghost" data-te="${t.id}">Edit</button><button class="btn sm red" data-td="${t.id}">✕</button></div>`; };
   const gv = (g, k) => g.some(x => p.l[x]);
-  main().innerHTML = `<h2>${isNew ? 'New patient' : esc(p.name || 'Patient')}</h2>
+  main().innerHTML = `<h2>${isNew ? 'New patient' : esc((p.bed ? 'Bed ' + p.bed + ' — ' : '') + (p.name || 'Patient'))}</h2>
+  <div class="card"><h3>Patient information</h3><div class="f2">${inp('bed', 'Bed', p.bed)}${inp('mrn', 'MRN / file no.', p.mrn)}</div>${inp('name', 'Full name', p.name)}
+  <div class="f3">${inp('age', 'Age', p.age, 'number')}<div><label>Sex</label><select data-f="sex">${['', 'Male', 'Female'].map(o => `<option ${p.sex === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div>${inp('admitted', 'Admitted', p.admitted, 'date')}</div>
+  ${inp('dx', 'Diagnosis / problem', p.dx)}${inp('allergies', 'Allergies (type NKDA if none)', p.allergies)}
+  <div class="f2"><div><label>Code status</label><select data-f="code">${['Full code', 'DNAR', 'Limited escalation'].map(o => `<option ${p.code === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div>
+  <div><label>Isolation</label><select data-f="isolation">${['None', 'Contact', 'Droplet', 'Airborne', 'Reverse'].map(o => `<option ${p.isolation === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div></div></div>
   <div class="row"><button class="btn" id="save">Save</button>${isNew ? '' : '<button class="btn gold" id="snap">Hand over ✔</button><button class="btn alt" id="scan">📷 Scan</button><button class="btn ghost" id="pdf">PDF</button>'}</div>
   <div class="card"><h3>Clinical status</h3><select data-f="cs">${['', 'Improving', 'Stable', 'Deteriorating', 'Critical'].map(o => `<option ${p.cs === o ? 'selected' : ''}>${o}</option>`).join('')}</select>${stamp(p, 'cs', 12, !!p.cs)}
   ${isNew ? '' : `<h3>Changes since last shift${prev ? ` <span class="muted small">(vs ${esc(prev.shift)} ${esc(prev.date)})</span>` : ''}</h3>${ch === null ? '<p class="muted small">No previous saved shift to compare.</p>' : ch.length ? ch.map(c => `<div class="chg ${/Deter/.test(c.type) ? 'bad' : ''}"><b>${esc(c.type)}</b>: ${esc(c.text)}</div>`).join('') : '<p class="muted small">No recorded changes.</p>'}
@@ -174,17 +197,12 @@ async function profileView(id) {
   <h3>ABG / lactate</h3><div class="f3">${ABG.map(k => inp('l.' + k, k, p.l[k] ?? '')).join('')}</div>${inp('obs.abg', 'Sample time (optional)', p.obs.abg || '', 'datetime-local')}${stamp(p, 'abg', 12, gv(ABG))}
   <h3>Laboratory results</h3><div class="f3">${LABS.map(k => inp('l.' + k, k, p.l[k] ?? '')).join('')}</div>${inp('obs.l', 'Result time (optional)', p.obs.l || '', 'datetime-local')}${stamp(p, 'l', 24, gv(LABS))}</div>
   <div class="card"><h3>ICU handover notes</h3>${SYSTEMS.map(([k, l]) => `<label>${l}</label><textarea data-f="h.${k}">${esc(p.h[k] || '')}</textarea>${k === 'meds' ? stamp(p, 'meds', 24, !!p.h.meds) : ''}`).join('')}</div>
-  <div class="card"><details ${isNew ? 'open' : ''}><summary>Patient details</summary><div class="f2">${inp('bed', 'Bed', p.bed)}${inp('mrn', 'MRN / file no.', p.mrn)}</div>${inp('name', 'Full name', p.name)}
-  <div class="f3">${inp('age', 'Age', p.age, 'number')}<div><label>Sex</label><select data-f="sex">${['', 'Male', 'Female'].map(o => `<option ${p.sex === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div>${inp('admitted', 'Admitted', p.admitted, 'date')}</div>
-  ${inp('dx', 'Diagnosis / problem', p.dx)}${inp('allergies', 'Allergies (type NKDA if none)', p.allergies)}
-  <div class="f2"><div><label>Code status</label><select data-f="code">${['Full code', 'DNAR', 'Limited escalation'].map(o => `<option ${p.code === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div>
-  <div><label>Isolation</label><select data-f="isolation">${['None', 'Contact', 'Droplet', 'Airborne', 'Reverse'].map(o => `<option ${p.isolation === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div></div></details></div>
   ${isNew ? '' : `<div class="card"><h3>Scanned documents (${docs.length})</h3>${docs.map(d => `<div class="doc"><img src="${d.img}" alt=""><div class="small"><b>${fmt(d.ts)}</b><br>${esc((d.text || '').slice(0, 70))}</div><button class="btn sm ghost" data-view="${d.id}">View</button><button class="btn sm red" data-deldoc="${d.id}">Delete</button></div>`).join('') || '<p class="muted small">No documents yet.</p>'}</div>
   <div class="card"><h3>Shift history (${shifts.length})</h3>${shifts.map(s => `<div class="doc"><div class="small"><b>${esc(s.shift)} · ${esc(s.date)}</b><br>${esc(s.from || '-')} → ${esc(s.to || '-')}</div><button class="btn sm ghost" data-pdfs="${s.id}">PDF</button></div>`).join('') || '<p class="muted small">No saved handovers yet.</p>'}</div>
   <div class="row"><button class="btn ghost" id="dis">${p.status === 'discharged' ? 'Re-admit patient' : 'Discharge patient'}</button><button class="btn red" id="del">Delete patient & all records</button></div>`}`;
   const collect = () => { document.querySelectorAll('[data-f]').forEach(el => setPath(p, el.dataset.f, el.value.trim())); return p; };
   const save = async silent => { collect(); if (!p.name && !p.bed) { toast('Enter a name or bed (Patient details)'); return false; } touch(p, orig); await DB.put('patients', p); orig = JSON.parse(JSON.stringify(p)); if (!silent) toast('Saved'); return true; };
-  $('#save').onclick = async () => { if (await save()) { if (isNew) go('#/p/' + p.id); else route(); } };
+  $('#save').onclick = async () => { if (await save()) { if (isNew) location.replace('#/p/' + p.id); else route(); } };
   if (isNew) return;
   $('#scan').onclick = async () => { if (await save(true)) go('#/scan/' + p.id); };
   $('#pdf').onclick = async () => { collect(); reportPDF([await liveEntry(p)], { shift: 'Current', date: today(), from: '', to: '' }, `handover-${(p.name || p.bed).replace(/\W+/g, '_')}.pdf`); };
@@ -316,14 +334,14 @@ async function scanView(pid) {
   };
   const saveDoc = async applied => { if (!cur.img && !$('#txt').value.trim()) { toast('Nothing to save'); return false; }
     await DB.put('docs', { id: uid(), pid, ts: Date.now(), img: cur.img || '', text: $('#txt').value, extracted: cur.ext, applied }); return true; };
-  $('#sd').onclick = async () => { if (await saveDoc(false)) { toast('Document saved'); go('#/p/' + pid); } };
+  $('#sd').onclick = async () => { if (await saveDoc(false)) { toast('Document saved'); location.replace('#/p/' + pid); } };
   $('#apply').onclick = async () => {
     const old0 = JSON.parse(JSON.stringify(p)); norm(p); document.querySelectorAll('[data-g]').forEach(i => { const v = i.value.trim(); if (v) p[i.dataset.g][i.dataset.k] = v; });
     const meds = [...document.querySelectorAll('.mk:checked')].map(c => c.value).filter(m => !(p.h.meds || '').includes(m));
     if (meds.length) p.h.meds = ((p.h.meds ? p.h.meds + '\n' : '') + meds.join('\n'));
-    touch(p, old0); await DB.put('patients', p); if (await saveDoc(true)) { toast('Applied and saved'); go('#/p/' + pid); }
+    touch(p, old0); await DB.put('patients', p); if (await saveDoc(true)) { toast('Applied and saved'); location.replace('#/p/' + pid); }
   };
-  $('#back').onclick = () => go('#/p/' + pid);
+  $('#back').onclick = () => location.replace('#/p/' + pid);
 }
 
 async function aboutView() {
@@ -331,7 +349,7 @@ async function aboutView() {
   main().innerHTML = `<h2>About the Application</h2><div class="card"><p><b>IBN SINA ICU HANDOVER</b> is an offline-first ICU shift handover tool: patient profiles, document scanning with on-device OCR and structured extraction, shift history and PDF handover reports.</p>
   <p class="small muted">All patient data is stored only in this device’s browser database. Nothing is sent to any server. It is a documentation aid and does not replace clinical judgement or the official medical record.</p></div>
   <div class="card"><h3>Developer</h3>${credit().replace('class="credit"', 'class="credit" style="border:0"').replace(/class="dc"/g, 'class="dc" style="display:block"')}</div>
-  <div class="card"><h3>Application credits</h3><p class="small">Design, development and maintenance: <b>${DEV.name}</b><br>OCR engine (optional, bundled locally): Tesseract.js — Apache-2.0 licence.<br>Version 1.1.0</p></div>
+  <div class="card"><h3>Application credits</h3><p class="small">Design, development and maintenance: <b>${DEV.name}</b><br>OCR engine (optional, bundled locally): Tesseract.js — Apache-2.0 licence.<br>Version 1.1.1</p></div>
   <div class="card"><h3>Report settings</h3><label>Hospital name (PDF header)</label><input id="hosp" value="${esc(JSON.parse(localStorage.getItem('org') || '{}').hosp || '')}" placeholder="IBN SINA Hospital"><label>Department</label><input id="dept" value="${esc(JSON.parse(localStorage.getItem('org') || '{}').dept || '')}" placeholder="Intensive Care Unit"><div class="row"><button class="btn" id="orgs">Save</button></div></div>
   <div class="card"><h3>Data & backup</h3><p class="small muted">${pc} patients · ${dc} documents · ${sc} handover records stored on this device.</p><div class="row"><button class="btn" id="exp">Export backup</button>
   <label class="btn ghost">Import backup<input type="file" accept=".json" id="imp" hidden></label></div><p class="small muted">Import merges records by ID and never deletes existing data. Keep backups in a safe place — they contain patient information.</p></div>`;
@@ -344,7 +362,7 @@ async function aboutView() {
 async function route() {
   stopCam(); clearInterval(dashTimer); main().onclick = null;
   const [v, a] = (location.hash.slice(2) || '').split('/'); const views = { '': boardView, p: profileView, scan: scanView, handover: handoverView, history: historyView, dashboard: dashboardView, about: aboutView };
-  document.body.dataset.view = v || 'board'; $('#footer').innerHTML = credit();
+  document.body.dataset.view = v || 'board'; $('#hback').hidden = !v; $('#footer').innerHTML = credit();
   document.querySelectorAll('.nav a').forEach(x => x.classList.toggle('on', x.dataset.nav === (v === 'p' || v === 'scan' || v === '' ? 'board' : v)));
   try { await (views[v] || boardView)(a); } catch (e) { console.error(e); main().innerHTML = `<div class="card">Something went wrong: ${esc(e.message)}</div>`; }
   window.scrollTo(0, 0);
@@ -354,7 +372,7 @@ async function route() {
   await DB.open();
   if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
   const upd = () => $('#offline').hidden = navigator.onLine; addEventListener('online', upd); addEventListener('offline', upd); upd();
-  addEventListener('hashchange', route);
+  addEventListener('hashchange', route); $('#hback').onclick = () => (history.length > 1 ? history.back() : go('#/'));
   $('#wcredit').innerHTML = credit(); $('#welcome').hidden = false; $('#enter').onclick = () => { $('#welcome').hidden = true; };
   await route();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(e => console.warn('SW', e));
