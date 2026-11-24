@@ -43,17 +43,24 @@ function modal(html) {
 const go = h => { location.hash = h; };
 const blankPatient = () => ({ id: uid(), bed: '', name: '', age: '', sex: '', mrn: '', dx: '', allergies: '', code: 'Full code', isolation: 'None', status: 'active', admitted: today(), h: {}, v: {}, l: {}, created: Date.now() });
 function setPath(o, path, val) { const k = path.split('.'); let c = o; while (k.length > 1) { const n = k.shift(); c = c[n] = c[n] || {}; } c[k[0]] = val; }
+const isNative = () => !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+const plug = n => (window.Capacitor.Plugins && window.Capacitor.Plugins[n]) || window.Capacitor.registerPlugin(n);
+const cancelled = e => /cancel|abort|dismiss/i.test(String((e && (e.name + ' ' + e.message)) || e));
+function diag(e, what) { // never fail silently: show the real error so it can be reported
+  const names = window.Capacitor && window.Capacitor.Plugins ? Object.keys(window.Capacitor.Plugins).join(', ') : 'none';
+  const m = modal(`<h3>${esc(what)} failed</h3><p class="small">${esc((e && e.message) || String(e))}</p><p class="small muted">Android plugins: ${esc(names)}</p><div class="row"><button class="btn" onclick="this.closest('.modal').remove()">Close</button></div>`); return m;
+}
+async function nativeSend(bytes, name) { // Android APK: write to cache, then open the system share sheet (Send / Save to Drive or Files)
+  const u8 = typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes; let bin = ''; for (let i = 0; i < u8.length; i += 8192) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
+  const FS = plug('Filesystem'), SH = plug('Share'), w = await FS.writeFile({ path: name, data: btoa(bin), directory: 'CACHE' });
+  const uri = (w && w.uri) || (await FS.getUri({ path: name, directory: 'CACHE' })).uri;
+  try { await SH.share({ title: name, files: [uri], dialogTitle: 'Send or save' }); }
+  catch (e) { if (cancelled(e)) return; await SH.share({ title: name, url: uri, dialogTitle: 'Send or save' }); }
+}
 async function download(bytes, name, type) {
-  const cap = window.Capacitor;
-  if (cap && cap.isNativePlatform && cap.isNativePlatform()) { // inside the Android APK: save to cache then open the share sheet
-    try {
-      const u8 = typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes; let bin = ''; for (let i = 0; i < u8.length; i += 8192) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
-      const FS = cap.registerPlugin('Filesystem'), SH = cap.registerPlugin('Share');
-      await FS.writeFile({ path: name, data: btoa(bin), directory: 'CACHE' }); const r = await FS.getUri({ path: name, directory: 'CACHE' });
-      await SH.share({ title: name, url: r.uri, dialogTitle: 'Save or share' }); return;
-    } catch (e) { console.warn('native save failed', e); }
-  }
-  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([bytes], { type })); a.download = name; document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500); }
+  if (isNative()) { try { await nativeSend(bytes, name); } catch (e) { if (!cancelled(e)) diag(e, 'Save / share'); } return; } // never falls back to a browser download (does nothing inside the APK)
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([bytes], { type })); a.download = name; document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+}
 
 /* ---------- v1.1 helpers ---------- */
 const norm = p => { p.h = p.h || {}; p.v = p.v || {}; p.l = p.l || {}; p.t = p.t || {}; p.obs = p.obs || {}; p.cs = p.cs || ''; return p; };
@@ -108,9 +115,9 @@ function copyText(text) {
   return navigator.clipboard && navigator.clipboard.writeText ? navigator.clipboard.writeText(text).then(() => true, fallback) : Promise.resolve(fallback());
 }
 function pdfModal(bytes, name, text) {
-  const m = modal(`<h3>PDF report ready</h3><p class="small muted">${esc(name)}</p><div class="row"><button class="btn gold" id="psh">Share / Send</button><button class="btn" id="psv">Save PDF</button><button class="btn alt" id="pcp">Copy text</button><button class="btn ghost" id="pcl">Close</button></div>
+  const m = modal(`<h3>PDF report ready</h3><p class="small muted">${esc(name)}</p><div class="row"><button class="btn gold" id="psh">Share / Send</button><button class="btn" id="psv">Save PDF</button><button class="btn alt" id="pst">Share text</button><button class="btn alt" id="pcp">Copy text</button><button class="btn ghost" id="pcl">Close</button></div>
   <p class="small muted">Share opens WhatsApp, email, etc. Copy text puts the report as plain text on the clipboard.</p>`);
-  const save = () => download(bytes, name, 'application/pdf'), native = () => window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform();
+  const save = () => download(bytes, name, 'application/pdf'), native = isNative;
   $('#psv', m).onclick = save; $('#pcl', m).onclick = () => m.close();
   $('#psh', m).onclick = async () => {
     if (native()) return save(); // the Android share sheet offers both send and save
@@ -118,6 +125,7 @@ function pdfModal(bytes, name, text) {
     try { if (navigator.canShare && navigator.canShare({ files: [f] })) await navigator.share({ files: [f], title: name }); else { await save(); toast('Sharing is not supported here — PDF saved instead'); } }
     catch (e) { if (e.name !== 'AbortError') { await save(); toast('Share failed — PDF saved instead'); } }
   };
+  $('#pst', m).onclick = async () => { try { if (native()) await plug('Share').share({ title: name, text, dialogTitle: 'Send report' }); else if (navigator.share) await navigator.share({ title: name, text }); else toast((await copyText(text)) ? 'Sharing not supported — text copied' : 'Sharing not supported'); } catch (e) { if (!cancelled(e)) diag(e, 'Share text'); } };
   $('#pcp', m).onclick = async () => toast((await copyText(text)) ? 'Report text copied' : 'Copy failed');
 }
 
@@ -349,7 +357,7 @@ async function aboutView() {
   main().innerHTML = `<h2>About the Application</h2><div class="card"><p><b>IBN SINA ICU HANDOVER</b> is an offline-first ICU shift handover tool: patient profiles, document scanning with on-device OCR and structured extraction, shift history and PDF handover reports.</p>
   <p class="small muted">All patient data is stored only in this device’s browser database. Nothing is sent to any server. It is a documentation aid and does not replace clinical judgement or the official medical record.</p></div>
   <div class="card"><h3>Developer</h3>${credit().replace('class="credit"', 'class="credit" style="border:0"').replace(/class="dc"/g, 'class="dc" style="display:block"')}</div>
-  <div class="card"><h3>Application credits</h3><p class="small">Design, development and maintenance: <b>${DEV.name}</b><br>OCR engine (optional, bundled locally): Tesseract.js — Apache-2.0 licence.<br>Version 1.1.1</p></div>
+  <div class="card"><h3>Application credits</h3><p class="small">Design, development and maintenance: <b>${DEV.name}</b><br>OCR engine (optional, bundled locally): Tesseract.js — Apache-2.0 licence.<br>Version 1.1.2</p></div>
   <div class="card"><h3>Report settings</h3><label>Hospital name (PDF header)</label><input id="hosp" value="${esc(JSON.parse(localStorage.getItem('org') || '{}').hosp || '')}" placeholder="IBN SINA Hospital"><label>Department</label><input id="dept" value="${esc(JSON.parse(localStorage.getItem('org') || '{}').dept || '')}" placeholder="Intensive Care Unit"><div class="row"><button class="btn" id="orgs">Save</button></div></div>
   <div class="card"><h3>Data & backup</h3><p class="small muted">${pc} patients · ${dc} documents · ${sc} handover records stored on this device.</p><div class="row"><button class="btn" id="exp">Export backup</button>
   <label class="btn ghost">Import backup<input type="file" accept=".json" id="imp" hidden></label></div><p class="small muted">Import merges records by ID and never deletes existing data. Keep backups in a safe place — they contain patient information.</p></div>`;
