@@ -13,18 +13,20 @@ jobs:
           mkdir -p www/icons
           cp index.html app.js parser.js pdf.js styles.css sw.js manifest.webmanifest www/
           cp icon-192.png icon-512.png maskable-512.png www/icons/
+      - name: Download OCR engine
+        run: |
+          mkdir -p www/vendor/tesseract/lang
+          J=https://cdn.jsdelivr.net/npm
+          for f in tesseract.min.js worker.min.js; do curl -fsSL $J/tesseract.js@5.1.1/dist/$f -o www/vendor/tesseract/$f; done
+          for f in tesseract-core tesseract-core-simd tesseract-core-lstm tesseract-core-simd-lstm; do curl -fsSL $J/tesseract.js-core@5.1.1/$f.wasm.js -o www/vendor/tesseract/$f.wasm.js; done
+          curl -fsSL https://github.com/naptha/tessdata/raw/gh-pages/4.0.0_fast/eng.traineddata.gz -o www/vendor/tesseract/lang/eng.traineddata.gz
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 17 }
       - run: npm install
       - run: npx cap add android
-      - name: Add camera permission
+      - name: Set app icon
         run: |
-          sed -i 's#</manifest>#    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-feature android:name="android.hardware.camera" android:required="false" />\n</manifest>#' android/app/src/main/AndroidManifest.xml
-      - run: npx cap sync android
-      - run: cd android && chmod +x gradlew && ./gradlew assembleDebug
-      - uses: actions/upload-artifact@v4
-        with:
-          name: IBN-SINA-ICU-HANDOVER-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          R=android/app/src/main/res
+          for d in mdp
