@@ -1,9 +1,9 @@
-const CACHE = 'ibn-sina-icu-v7';
+const CACHE = 'ibn-sina-icu-v8';
 const CORE = ['./', 'index.html', 'styles.css', 'app.js', 'parser.js', 'pdf.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png'];
 const OCR = ['vendor/tesseract/tesseract.min.js', 'vendor/tesseract/worker.min.js', 'vendor/tesseract/tesseract-core.wasm.js',
   'vendor/tesseract/tesseract-core-simd.wasm.js', 'vendor/tesseract/tesseract-core-lstm.wasm.js',
-  'vendor/tesseract/tesseract-core-simd-lstm.wasm.js', 'vendor/tesseract/lang/eng.traineddata.gz'];
+  'vendor/tesseract/tesseract-core-simd-lstm.wasm.js', 'vendor/tesseract/lang/eng.traineddata'];
 self.addEventListener('install', e => {
   e.waitUntil((async () => {
     const c = await caches.open(CACHE); await c.addAll(CORE);

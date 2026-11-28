@@ -147,12 +147,12 @@ function pdfModal(bytes, name, text) {
 /* ---------- OCR ---------- */
 const loadScript = src => new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej; document.head.append(s); });
 const withTimeout = (p, ms, what) => Promise.race([p, new Promise((_, rj) => setTimeout(() => rj(new Error(what + ' timed out after ' + ms / 1000 + ' s')), ms))]);
-const OCR_FILES = ['tesseract.min.js', 'worker.min.js', 'tesseract-core-simd-lstm.wasm.js', 'tesseract-core-lstm.wasm.js', 'lang/eng.traineddata.gz'];
+const OCR_FILES = ['tesseract.min.js', 'worker.min.js', 'tesseract-core-simd-lstm.wasm.js', 'tesseract-core-lstm.wasm.js', 'lang/eng.traineddata'];
 async function runOCR(canvas, stat) { // never swallows errors: the real reason is returned to the screen
   const errs = [];
   try {
     if (!window.Tesseract) await withTimeout(loadScript('vendor/tesseract/tesseract.min.js'), 20000, 'Loading OCR script').catch(() => { throw new Error('OCR engine files are missing from this build (vendor/tesseract/tesseract.min.js not found)'); });
-    const w = await withTimeout(Tesseract.createWorker('eng', 1, { workerPath: 'vendor/tesseract/worker.min.js', corePath: 'vendor/tesseract/', langPath: 'vendor/tesseract/lang', workerBlobURL: false, logger: m => stat(`${m.status} ${Math.round((m.progress || 0) * 100)}%`) }), 90000, 'Starting the OCR engine');
+    const w = await withTimeout(Tesseract.createWorker('eng', 1, { workerPath: 'vendor/tesseract/worker.min.js', corePath: 'vendor/tesseract/', langPath: 'vendor/tesseract/lang', gzip: false, workerBlobURL: false, logger: m => stat(`${m.status} ${Math.round((m.progress || 0) * 100)}%`) }), 90000, 'Starting the OCR engine');
     try { const r = await withTimeout(w.recognize(canvas), 180000, 'Reading the image'); return { text: r.data.text, engine: 'Tesseract (on-device)' }; } finally { w.terminate().catch(() => { }); }
   } catch (e) { errs.push((e && e.message) || String(e)); console.warn('OCR failed', e); }
   if ('TextDetector' in window) { try { const r = await new TextDetector().detect(canvas); if (r.length) return { text: r.map(x => x.rawValue).join('\n'), engine: 'Browser text detector' }; } catch (e) { errs.push('TextDetector: ' + e.message); } }
@@ -410,7 +410,7 @@ async function aboutView() {
   main().innerHTML = `<h2>About the Application</h2><div class="card"><p><b>IBN SINA ICU HANDOVER</b> is an offline-first ICU shift handover tool: patient profiles, document scanning with on-device OCR and structured extraction, shift history and PDF handover reports.</p>
   <p class="small muted">All patient data is stored only in this device’s browser database. Nothing is sent to any server. It is a documentation aid and does not replace clinical judgement or the official medical record.</p></div>
   <div class="card"><h3>Developer</h3>${credit().replace('class="credit"', 'class="credit" style="border:0"').replace(/class="dc"/g, 'class="dc" style="display:block"')}</div>
-  <div class="card"><h3>Application credits</h3><p class="small">Design, development and maintenance: <b>${DEV.name}</b><br>OCR engine (optional, bundled locally): Tesseract.js — Apache-2.0 licence.<br>Version 1.2.1</p></div>
+  <div class="card"><h3>Application credits</h3><p class="small">Design, development and maintenance: <b>${DEV.name}</b><br>OCR engine (optional, bundled locally): Tesseract.js — Apache-2.0 licence.<br>Version 1.2.2</p></div>
   <div class="card"><h3>Report settings</h3><label>Hospital name (PDF header)</label><input id="hosp" value="${esc(jget('org').hosp || '')}" placeholder="IBN SINA Hospital"><label>Department</label><input id="dept" value="${esc(jget('org').dept || '')}" placeholder="Intensive Care Unit"><div class="row"><button class="btn" id="orgs">Save</button></div></div>
   <div class="card"><h3>OCR engine</h3><p class="small muted">Reads English text from scanned documents on this device. If scanning does not work, check the engine here.</p><div class="row"><button class="btn alt" id="ocrchk">Check OCR engine</button></div></div>
   <div class="card"><h3>Data & backup</h3><p class="small muted">${pc} patients · ${dc} documents · ${sc} handover records stored on this device. Last backup: ${localStorage.getItem('lastBackup') ? fmt(+localStorage.getItem('lastBackup')) : 'never'}.</p><div class="row"><button class="btn" id="exp">Export backup</button>
