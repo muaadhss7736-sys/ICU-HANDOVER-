@@ -19,7 +19,7 @@
     INR: '(?:INR)'
   };
   function extract(text) {
-    const t = String(text || '').replace(/[|]/g, ' ').replace(/\r/g, '');
+    const t = ar2en(text || '').replace(/[|]/g, ' ').replace(/\r/g, '');
     const out = { patient: {}, vitals: {}, labs: {}, meds: [] };
     for (const k in VITALS) { const v = num(t, VITALS[k]); if (v) out.vitals[k] = v; }
     let m = t.match(/\b(?:BP|blood\s*pressure|NIBP|ABP)\s*[:=\-]?\s*(\d{2,3})\s*[\/\\]\s*(\d{2,3})/i) ||
@@ -47,18 +47,21 @@
   /* ---- Handover logic: changes since last saved shift + checklist (only compares data that was actually saved) ---- */
   const RANK = { Improving: 0, Stable: 1, Deteriorating: 2, Critical: 3 };
   const KEYS = ['pH', 'pCO2', 'pO2', 'HCO3', 'Lactate', 'Hb', 'WBC', 'Plt', 'Na', 'K', 'Cr', 'Urea', 'Glucose', 'CRP', 'Bili', 'INR'];
+  const ar2en = s => String(s).replace(/[٠-٩]/g, d => d.charCodeAt(0) - 0x660).replace(/[۰-۹]/g, d => d.charCodeAt(0) - 0x6F0).replace(/٫/g, '.').replace(/[٬،]/g, '');
+  const nz = v => { const s = String(v == null ? '' : v).trim(); return /^\d+(\.\d+)?$/.test(s) ? String(parseFloat(s)) : s.toLowerCase(); };
+  const nt = v => String(v == null ? '' : v).trim().replace(/\s+/g, ' ').toLowerCase();
   const lines = t => String(t || '').split('\n').map(s => s.trim()).filter(Boolean);
   function changes(cur, prev, tasks, since) {
     if (!prev) return null;
     const out = [], add = (type, text) => out.push({ type, text }), ch = cur.h || {}, ph = prev.h || {};
-    if (cur.dx && cur.dx !== (prev.dx || '')) add('New Diagnosis', (prev.dx ? prev.dx + ' -> ' : '') + cur.dx);
+    if (cur.dx && nt(cur.dx) !== nt(prev.dx)) add('New Diagnosis', (prev.dx ? prev.dx + ' -> ' : '') + cur.dx);
     if (cur.cs && prev.cs && cur.cs !== prev.cs) add(RANK[cur.cs] > RANK[prev.cs] ? 'Clinical Deterioration' : 'Improvement in Clinical Status', prev.cs + ' -> ' + cur.cs);
     else if (cur.cs && !prev.cs) add('Clinical Status', cur.cs);
-    const pm = lines(ph.meds), cm = lines(ch.meds);
-    cm.filter(x => !pm.includes(x)).forEach(x => add('New Medication', x));
-    pm.filter(x => !cm.includes(x)).forEach(x => add('Medication Discontinued', x));
-    for (const k of KEYS) { const a = (cur.l || {})[k], b = (prev.l || {})[k]; if (a && a !== b) add('New Laboratory Results', k + ' ' + a + (b ? ' (was ' + b + ')' : '')); }
-    const txt = (k, type) => { const a = String(ch[k] || '').trim(); if (a && a !== String(ph[k] || '').trim()) add(type, a); };
+    const pm = lines(ph.meds), cm = lines(ch.meds), pn = pm.map(nt), cn = cm.map(nt);
+    cm.filter((x, i) => !pn.includes(cn[i])).forEach(x => add('New Medication', x));
+    pm.filter((x, i) => !cn.includes(pn[i])).forEach(x => add('Medication Discontinued', x));
+    for (const k of KEYS) { const a = (cur.l || {})[k], b = (prev.l || {})[k]; if (a && nz(a) !== nz(b)) add('New Laboratory Results', k + ' ' + a + (b ? ' (was ' + b + ')' : '')); }
+    const txt = (k, type) => { const a = String(ch[k] || '').trim(); if (a && nt(a) !== nt(ph[k])) add(type, a); };
     txt('resp', 'Changes in Ventilator / Respiratory Settings'); txt('imaging', 'New Imaging Findings'); txt('procedures', 'New Procedures'); txt('events', 'Significant Clinical Events');
     (tasks || []).forEach(t => { if (t.created > since) add('New Task', t.text); if (t.done && t.doneAt > since) add('Task Completed', t.text); });
     return out;
@@ -69,6 +72,6 @@
       ['Airway / Respiratory Support', has(h.resp)], ['Hemodynamic Status', has(h.cv) || has(v.bp)], ['Important Laboratory Results', Object.values(l).some(has)],
       ['Active Problems', has(h.problems)], ['Pending Tasks', (tasks || []).length > 0], ['Management Plan', has(h.plan)]].map(([k, ok]) => ({ k, ok }));
   }
-  const api = { extract, changes, checklist };
+  const api = { extract, changes, checklist, ar2en };
   if (typeof module !== 'undefined') module.exports = api; else root.Parser = api;
 })(typeof self !== 'undefined' ? self : this);

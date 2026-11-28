@@ -3,7 +3,7 @@
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }; // local calendar day (not UTC)
 const fmt = ts => new Date(ts).toLocaleString();
 const DEV = { name: 'MUAADH SAEED AL-SAKOTI', email: 'muaadh.s.s7736@gmail.com', phone: '771491753' };
 const credit = () => `<div class="credit"><div class="dby">Developed by</div><div class="dname">${DEV.name}</div><div class="dc">Email: ${DEV.email}</div><div class="dc">Phone: ${DEV.phone}</div></div>`;
@@ -25,7 +25,7 @@ const DB = {
       r.onsuccess = () => { this.db = r.result; res(); }; r.onerror = () => rej(r.error);
     });
   },
-  req(store, mode, fn) { return new Promise((res, rej) => { const t = this.db.transaction(store, mode); const q = fn(t.objectStore(store)); t.oncomplete = () => res(q && q.result); t.onerror = () => rej(t.error); }); },
+  req(store, mode, fn) { return new Promise((res, rej) => { const t = this.db.transaction(store, mode); const q = fn(t.objectStore(store)); t.oncomplete = () => res(q && q.result); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error || new Error('Database write was aborted (device storage may be full)')); }); },
   all(s) { return this.req(s, 'readonly', o => o.getAll()); },
   get(s, id) { return this.req(s, 'readonly', o => o.get(id)); },
   put(s, v) { return this.req(s, 'readwrite', o => o.put(v)); },
@@ -62,6 +62,21 @@ async function download(bytes, name, type) {
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([bytes], { type })); a.download = name; document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
 }
 
+/* ---------- audit helpers ---------- */
+let dirty = false, lastHash = location.hash || '#/', restoring = false, shiftBusy = false;
+const jget = k => { try { const v = JSON.parse(localStorage.getItem(k) || '{}'); return v && typeof v === 'object' ? v : {}; } catch (e) { return {}; } };
+const putPatient = p => { p.updated = Date.now(); return DB.put('patients', p); };
+const putTask = t => { t.mod = Date.now(); return DB.put('tasks', t); };
+const RANGES = [['age', 0, 130, 'Age'], ['v.hr', 0, 350, 'HR'], ['v.rr', 0, 100, 'RR'], ['v.spo2', 0, 100, 'SpO2'], ['v.temp', 20, 45, 'Temp'], ['v.gcs', 3, 15, 'GCS']];
+function validate(p) { // blocks only physically impossible / non-numeric entries (typos)
+  const bad = [], get = k => k.includes('.') ? (p[k.split('.')[0]] || {})[k.split('.')[1]] : p[k];
+  for (const [k, lo, hi, n] of RANGES) { const v = String(get(k) ?? '').trim(); if (v && !(/^\d+(\.\d+)?$/.test(v) && +v >= lo && +v <= hi)) bad.push(`${n} (${lo}-${hi})`); }
+  const bp = String((p.v || {}).bp || '').trim(); if (bp && !/^\d{2,3}\s*\/\s*\d{2,3}$/.test(bp)) bad.push('BP (e.g. 120/80)');
+  for (const k of [...LABS, ...ABG]) { const v = String((p.l || {})[k] ?? '').trim(); if (v && !/^[<>]?\d+(\.\d+)?$/.test(v)) bad.push(k); }
+  if (/^\d/.test((p.l || {}).pH || '') && !(+p.l.pH >= 6 && +p.l.pH <= 8)) bad.push('pH (6-8)'); return bad;
+}
+const rtlFix = () => document.querySelectorAll('#main input:not([type=checkbox]):not([type=file]):not([type=date]):not([type=datetime-local]), #main textarea, .modal input, .modal textarea, #main .nm, #main .small, #main .chg, #main td, #main h2, .modal .small, .modal h3').forEach(e => { if (!e.hasAttribute('dir')) e.setAttribute('dir', 'auto'); });
+
 /* ---------- v1.1 helpers ---------- */
 const norm = p => { p.h = p.h || {}; p.v = p.v || {}; p.l = p.l || {}; p.t = p.t || {}; p.obs = p.obs || {}; p.cs = p.cs || ''; return p; };
 const ago = ts => { if (!ts) return ''; const m = Math.round((Date.now() - ts) / 6e4); return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' d ago'; };
@@ -85,7 +100,7 @@ const histEntry = s => ({ p: s.snapshot, tasks: (s.tasks || []).filter(t => !t.d
 
 /* ---------- PDF report ---------- */
 function reportPDF(entries, meta, filename) {
-  const org = JSON.parse(localStorage.getItem('org') || '{}');
+  const org = jget('org');
   const it = [{ t: 'IBN SINA ICU HANDOVER REPORT', s: 17, b: 1 }, { t: `${org.hosp || 'IBN SINA Hospital'}  -  ${org.dept || 'Intensive Care Unit'}`, s: 11, b: 1, gap: 2 },
     { t: `Shift: ${meta.shift}   Date: ${meta.date}   Printed: ${fmt(Date.now())}`, s: 9, gap: 2 }, { t: `Doctor handing over: ${meta.from || '-'}      Doctor receiving: ${meta.to || '-'}`, s: 10, rule: 1 }];
   const H = t => it.push({ t, s: 9.5, b: 1, gap: 5 }), T = (t, i = 6) => it.push({ t, s: 10, i });
@@ -108,7 +123,7 @@ function reportPDF(entries, meta, filename) {
   });
   if (!entries.length) it.push({ t: 'No patients selected.', s: 10 });
   const foot = [{ t: 'Developed by' }, { t: DEV.name, b: 1 }, { t: 'Email: ' + DEV.email }, { t: 'Phone: ' + DEV.phone }];
-  pdfModal(PDFW.makePDF(it, foot), filename, it.concat(foot).filter(x => x.t).map(x => x.t).join('\n'));
+  pdfModal(PDFW.makePDFAuto(it, foot), filename, it.concat(foot).filter(x => x.t).map(x => x.t).join('\n'));
 }
 function copyText(text) {
   const fallback = () => { const a = document.createElement('textarea'); a.value = text; a.style.cssText = 'position:fixed;opacity:0'; document.body.append(a); a.select(); let ok = false; try { ok = document.execCommand('copy'); } catch (e) { } a.remove(); return ok; };
@@ -161,7 +176,7 @@ function stopCam() { if (stream) { stream.getTracks().forEach(t => t.stop()); st
 const board = { q: '', all: false };
 function card(p, n) {
   norm(p); const bad = /Det|Crit/.test(p.cs), old = p.t.v && Date.now() - p.t.v > 6 * 36e5;
-  return `<div class="card pc ${p.status === 'discharged' ? 'dis' : ''}" data-open="${p.id}"><div class="bed">BED ${esc(p.bed || '-')}</div><div class="nm">${esc(p.name || 'Unnamed patient')}</div>
+  return `<div class="card pc ${p.status === 'discharged' ? 'dis' : ''}" data-open="${esc(p.id)}"><div class="bed">BED ${esc(p.bed || '-')}</div><div class="nm">${esc(p.name || 'Unnamed patient')}</div>
   <div class="small muted">${esc([p.age && p.age + 'y', p.sex, p.mrn && 'MRN ' + p.mrn].filter(Boolean).join(' · '))}</div><div class="small">${esc(p.dx || '')}</div>
   ${p.cs ? `<span class="chip ${bad ? 'red' : ''}">${esc(p.cs)}</span>` : ''}<span class="chip ${p.code !== 'Full code' ? 'red' : ''}">${esc(p.code)}</span>${p.allergies ? `<span class="chip red">Allergy: ${esc(p.allergies)}</span>` : ''}${p.isolation && p.isolation !== 'None' ? `<span class="chip gray">${esc(p.isolation)}</span>` : ''}${n ? `<span class="chip">${n} pending task${n > 1 ? 's' : ''}</span>` : ''}
   <div class="small muted">${VITALS.filter(([k]) => p.v?.[k]).map(([k, l]) => `${l} ${esc(p.v[k])}`).join(' · ')}</div>${Object.keys(p.v || {}).length ? `<div class="ts ${old || !p.t.v ? 'old' : ''}">Vitals: ${p.t.v ? ago(p.t.v) : 'time not recorded'}</div>` : ''}</div>`;
@@ -185,11 +200,11 @@ async function profileView(id) {
   const ch = prev ? Parser.changes(p, prev.snapshot, tasks, prev.ts) : null, cl = Parser.checklist(p, tasks), miss = cl.filter(x => !x.ok).map(x => x.k);
   const open = tasks.filter(t => !t.done).sort((a, b) => PR[a.priority] - PR[b.priority] || String(a.due || 'z').localeCompare(String(b.due || 'z'))), done = tasks.filter(t => t.done).sort((a, b) => b.doneAt - a.doneAt);
   const inp = (path, label, val, t = 'text') => `<div><label>${label}</label><input type="${t}" data-f="${path}" value="${esc(val)}"></div>`;
-  const trow = t => { const od = !t.done && t.due && new Date(t.due).getTime() < Date.now(); return `<div class="doc"><input type="checkbox" data-tk="${t.id}" ${t.done ? 'checked' : ''} style="width:24px;height:24px"><div class="small ${t.done ? 'muted' : ''}"><b>${esc(t.text)}</b><br><span class="chip ${t.priority === 'High' ? 'red' : t.priority === 'Low' ? 'gray' : ''}">${t.priority}</span>${od ? '<span class="chip red">OVERDUE</span>' : ''}${t.due ? ' Due ' + fmt(new Date(t.due).getTime()) : ''}${t.carried ? ' · carried ×' + t.carried : ''}${t.done ? ' · done ' + fmt(t.doneAt) : ''}</div><button class="btn sm ghost" data-te="${t.id}">Edit</button><button class="btn sm red" data-td="${t.id}">✕</button></div>`; };
+  const trow = t => { const od = !t.done && t.due && new Date(t.due).getTime() < Date.now(); return `<div class="doc"><input type="checkbox" data-tk="${esc(t.id)}" ${t.done ? 'checked' : ''} style="width:24px;height:24px"><div class="small ${t.done ? 'muted' : ''}"><b>${esc(t.text)}</b><br><span class="chip ${t.priority === 'High' ? 'red' : t.priority === 'Low' ? 'gray' : ''}">${esc(t.priority)}</span>${od ? '<span class="chip red">OVERDUE</span>' : ''}${t.due ? ' Due ' + fmt(new Date(t.due).getTime()) : ''}${t.carried ? ' · carried ×' + t.carried : ''}${t.done ? ' · done ' + fmt(t.doneAt) : ''}</div><button class="btn sm ghost" data-te="${esc(t.id)}">Edit</button><button class="btn sm red" data-td="${esc(t.id)}">✕</button></div>`; };
   const gv = (g, k) => g.some(x => p.l[x]);
   main().innerHTML = `<h2>${isNew ? 'New patient' : esc((p.bed ? 'Bed ' + p.bed + ' — ' : '') + (p.name || 'Patient'))}</h2>
   <div class="card"><h3>Patient information</h3><div class="f2">${inp('bed', 'Bed', p.bed)}${inp('mrn', 'MRN / file no.', p.mrn)}</div>${inp('name', 'Full name', p.name)}
-  <div class="f3">${inp('age', 'Age', p.age, 'number')}<div><label>Sex</label><select data-f="sex">${['', 'Male', 'Female'].map(o => `<option ${p.sex === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div>${inp('admitted', 'Admitted', p.admitted, 'date')}</div>
+  <div class="f3">${inp('age', 'Age', p.age)}<div><label>Sex</label><select data-f="sex">${['', 'Male', 'Female'].map(o => `<option ${p.sex === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div>${inp('admitted', 'Admitted', p.admitted, 'date')}</div>
   ${inp('dx', 'Diagnosis / problem', p.dx)}${inp('allergies', 'Allergies (type NKDA if none)', p.allergies)}
   <div class="f2"><div><label>Code status</label><select data-f="code">${['Full code', 'DNAR', 'Limited escalation'].map(o => `<option ${p.code === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div>
   <div><label>Isolation</label><select data-f="isolation">${['None', 'Contact', 'Droplet', 'Airborne', 'Reverse'].map(o => `<option ${p.isolation === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div></div></div>
@@ -205,29 +220,41 @@ async function profileView(id) {
   <h3>ABG / lactate</h3><div class="f3">${ABG.map(k => inp('l.' + k, k, p.l[k] ?? '')).join('')}</div>${inp('obs.abg', 'Sample time (optional)', p.obs.abg || '', 'datetime-local')}${stamp(p, 'abg', 12, gv(ABG))}
   <h3>Laboratory results</h3><div class="f3">${LABS.map(k => inp('l.' + k, k, p.l[k] ?? '')).join('')}</div>${inp('obs.l', 'Result time (optional)', p.obs.l || '', 'datetime-local')}${stamp(p, 'l', 24, gv(LABS))}</div>
   <div class="card"><h3>ICU handover notes</h3>${SYSTEMS.map(([k, l]) => `<label>${l}</label><textarea data-f="h.${k}">${esc(p.h[k] || '')}</textarea>${k === 'meds' ? stamp(p, 'meds', 24, !!p.h.meds) : ''}`).join('')}</div>
-  ${isNew ? '' : `<div class="card"><h3>Scanned documents (${docs.length})</h3>${docs.map(d => `<div class="doc"><img src="${d.img}" alt=""><div class="small"><b>${fmt(d.ts)}</b><br>${esc((d.text || '').slice(0, 70))}</div><button class="btn sm ghost" data-view="${d.id}">View</button><button class="btn sm red" data-deldoc="${d.id}">Delete</button></div>`).join('') || '<p class="muted small">No documents yet.</p>'}</div>
-  <div class="card"><h3>Shift history (${shifts.length})</h3>${shifts.map(s => `<div class="doc"><div class="small"><b>${esc(s.shift)} · ${esc(s.date)}</b><br>${esc(s.from || '-')} → ${esc(s.to || '-')}</div><button class="btn sm ghost" data-pdfs="${s.id}">PDF</button></div>`).join('') || '<p class="muted small">No saved handovers yet.</p>'}</div>
+  ${isNew ? '' : `<div class="card"><h3>Scanned documents (${docs.length})</h3>${docs.map(d => `<div class="doc"><img src="${esc(d.img)}" alt=""><div class="small"><b>${fmt(d.ts)}</b><br>${esc((d.text || '').slice(0, 70))}</div><button class="btn sm ghost" data-view="${esc(d.id)}">View</button><button class="btn sm red" data-deldoc="${esc(d.id)}">Delete</button></div>`).join('') || '<p class="muted small">No documents yet.</p>'}</div>
+  <div class="card"><h3>Shift history (${shifts.length})</h3>${shifts.map(s => `<div class="doc"><div class="small"><b>${esc(s.shift)} · ${esc(s.date)}</b><br>${esc(s.from || '-')} → ${esc(s.to || '-')}</div><button class="btn sm ghost" data-pdfs="${esc(s.id)}">PDF</button></div>`).join('') || '<p class="muted small">No saved handovers yet.</p>'}</div>
   <div class="row"><button class="btn ghost" id="dis">${p.status === 'discharged' ? 'Re-admit patient' : 'Discharge patient'}</button><button class="btn red" id="del">Delete patient & all records</button></div>`}`;
-  const collect = () => { document.querySelectorAll('[data-f]').forEach(el => setPath(p, el.dataset.f, el.value.trim())); return p; };
-  const save = async silent => { collect(); if (!p.name && !p.bed) { toast('Enter a name or bed (Patient details)'); return false; } touch(p, orig); await DB.put('patients', p); orig = JSON.parse(JSON.stringify(p)); if (!silent) toast('Saved'); return true; };
+  const collect = () => { document.querySelectorAll('[data-f]').forEach(el => { let v = el.value.trim(); if (/^(v\.|l\.|age$)/.test(el.dataset.f)) v = Parser.ar2en(v); setPath(p, el.dataset.f, v); }); return p; };
+  const save = async silent => {
+    collect(); if (!p.name && !p.bed) { toast('Enter a name or bed (Patient details)'); return false; }
+    const bad = validate(p); if (bad.length) { toast('Please check: ' + bad.join(', ')); return false; }
+    if (p.status !== 'discharged' && (isNew || orig.bed !== p.bed || orig.mrn !== p.mrn)) {
+      const others = (await DB.all('patients')).filter(o => o.id !== p.id && o.status !== 'discharged');
+      const b = p.bed && others.find(o => String(o.bed) === String(p.bed)), m = p.mrn && others.find(o => o.mrn && o.mrn === p.mrn);
+      if (b && (isNew || orig.bed !== p.bed) && !confirm(`Bed ${p.bed} is already used by ${b.name || 'another patient'}. Save anyway?`)) return false;
+      if (m && (isNew || orig.mrn !== p.mrn) && !confirm(`MRN ${p.mrn} already belongs to ${m.name || 'another patient'}. Save anyway?`)) return false;
+    }
+    touch(p, orig); await putPatient(p); orig = JSON.parse(JSON.stringify(p)); dirty = false; if (!silent) toast('Saved'); return true;
+  };
+  dirty = false; main().oninput = main().onchange = () => { dirty = true; };
+  document.querySelectorAll('[data-f="age"],[data-f^="v."],[data-f^="l."]').forEach(e => e.setAttribute('inputmode', 'decimal'));
   $('#save').onclick = async () => { if (await save()) { if (isNew) location.replace('#/p/' + p.id); else route(); } };
   if (isNew) return;
   $('#scan').onclick = async () => { if (await save(true)) go('#/scan/' + p.id); };
   $('#pdf').onclick = async () => { collect(); reportPDF([await liveEntry(p)], { shift: 'Current', date: today(), from: '', to: '' }, `handover-${(p.name || p.bed).replace(/\W+/g, '_')}.pdf`); };
   $('#snap').onclick = async () => { if (await save(true)) shiftModal([p.id]); };
-  $('#dis').onclick = async () => { collect(); p.status = p.status === 'discharged' ? 'active' : 'discharged'; await DB.put('patients', p); toast('Updated'); route(); };
+  $('#dis').onclick = async () => { collect(); p.status = p.status === 'discharged' ? 'active' : 'discharged'; await putPatient(p); toast('Updated'); route(); };
   $('#del').onclick = async () => { if (!confirm('Permanently delete this patient and all their documents, tasks and handover history?')) return; for (const d of docs) await DB.del('docs', d.id); for (const s of shifts) await DB.del('shifts', s.id); for (const t of tasks) await DB.del('tasks', t.id); await DB.del('patients', p.id); go('#/'); };
-  $('#ta').onclick = async () => { const text = $('#tt').value.trim(); if (!text) return toast('Write the task first'); if (!await save(true)) return; await DB.put('tasks', { id: uid(), pid: p.id, text, priority: $('#tp').value, due: $('#tdu').value, done: false, created: Date.now(), carried: 0 }); route(); };
+  $('#ta').onclick = async () => { const text = $('#tt').value.trim(); if (!text) return toast('Write the task first'); if ($('#ta').disabled) return; $('#ta').disabled = true; if (!await save(true)) { $('#ta').disabled = false; return; } await putTask({ id: uid(), pid: p.id, text, priority: $('#tp').value, due: $('#tdu').value, done: false, created: Date.now(), carried: 0 }); route(); };
   main().onclick = async e => {
     const t = e.target, d = t.dataset;
-    if (d.view) { const x = docs.find(z => z.id === d.view); modal(`<h3>Document ${fmt(x.ts)}</h3><img src="${x.img}"><pre class="small" style="white-space:pre-wrap">${esc(x.text)}</pre><button class="btn" onclick="this.closest('.modal').remove()">Close</button>`); }
+    if (d.view) { const x = docs.find(z => z.id === d.view); modal(`<h3>Document ${fmt(x.ts)}</h3><img src="${esc(x.img)}"><pre class="small" style="white-space:pre-wrap">${esc(x.text)}</pre><button class="btn" onclick="this.closest('.modal').remove()">Close</button>`); }
     if (d.deldoc && confirm('Delete this document?')) { await DB.del('docs', d.deldoc); route(); }
     if (d.pdfs) { const s = shifts.find(z => z.id === d.pdfs); reportPDF([histEntry(s)], s, `handover-${s.date}-${s.shift}.pdf`); }
-    if (d.tk) { if (!await save(true)) return; const k = tasks.find(z => z.id === d.tk); k.done = t.checked; k.doneAt = t.checked ? Date.now() : null; await DB.put('tasks', k); route(); }
+    if (d.tk) { if (!await save(true)) return; const k = tasks.find(z => z.id === d.tk); k.done = t.checked; k.doneAt = t.checked ? Date.now() : null; await putTask(k); route(); }
     if (d.td && confirm('Delete this task?')) { await save(true); await DB.del('tasks', d.td); route(); }
     if (d.te) { const k = tasks.find(z => z.id === d.te);
       const m = modal(`<h3>Edit task</h3><label>Task</label><input id="et" value="${esc(k.text)}"><div class="f2"><div><label>Priority</label><select id="ep">${['High', 'Medium', 'Low'].map(o => `<option ${k.priority === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div><div><label>Follow-up time</label><input type="datetime-local" id="ed" value="${esc(k.due || '')}"></div></div><div class="row"><button class="btn" id="eok">Save</button><button class="btn ghost" id="eno">Cancel</button></div>`);
-      $('#eno', m).onclick = () => m.close(); $('#eok', m).onclick = async () => { k.text = $('#et', m).value.trim() || k.text; k.priority = $('#ep', m).value; k.due = $('#ed', m).value; await save(true); await DB.put('tasks', k); m.close(); route(); }; }
+      $('#eno', m).onclick = () => m.close(); $('#eok', m).onclick = async () => { k.text = $('#et', m).value.trim() || k.text; k.priority = $('#ep', m).value; k.due = $('#ed', m).value; await save(true); await putTask(k); m.close(); route(); }; }
   };
 }
 
@@ -235,24 +262,29 @@ async function profileView(id) {
 async function saveShift(pids, meta) {
   for (const pid of pids) {
     const p = await DB.get('patients', pid); if (!p) continue; norm(p);
-    const tasks = await DB.byPid('tasks', pid), pv = await prevShift(pid);
-    await DB.put('shifts', { id: uid(), pid, ts: Date.now(), shift: meta.shift, date: meta.date, from: meta.from, to: meta.to, snapshot: JSON.parse(JSON.stringify(p)), tasks: JSON.parse(JSON.stringify(tasks)), changes: pv ? Parser.changes(p, pv.snapshot, tasks, pv.ts) : null });
-    for (const t of tasks) if (!t.done) { t.carried = (t.carried || 0) + 1; await DB.put('tasks', t); } // unfinished tasks carry over to the next shift
+    const tasks = await DB.byPid('tasks', pid), all = (await DB.byPid('shifts', pid)).sort((a, b) => b.ts - a.ts), dup = all.find(x => x.date === meta.date && x.shift === meta.shift), pv = all.find(x => x !== dup);
+    await DB.put('shifts', { id: dup ? dup.id : uid(), pid, ts: Date.now(), shift: meta.shift, date: meta.date, from: meta.from, to: meta.to, snapshot: JSON.parse(JSON.stringify(p)), tasks: JSON.parse(JSON.stringify(tasks)), changes: pv ? Parser.changes(p, pv.snapshot, tasks, pv.ts) : null });
+    if (!dup) for (const t of tasks) if (!t.done) { t.carried = (t.carried || 0) + 1; await putTask(t); } // unfinished tasks carry over once per shift
   }
   localStorage.setItem('lastShift', JSON.stringify({ from: meta.from, to: meta.to }));
 }
-async function checkAndSave(pids, meta) { // checklist warning only: never blocks the handover
-  const bad = [];
-  for (const pid of pids) { const p = await DB.get('patients', pid); if (!p) continue; norm(p); const miss = Parser.checklist(p, await DB.byPid('tasks', pid)).filter(x => !x.ok).map(x => x.k); if (miss.length) bad.push({ p, miss }); }
-  if (bad.length) {
-    const ok = await new Promise(res => { const m = modal(`<h3>Handover checklist</h3><p class="small muted">Some important information is missing. You can still complete the handover.</p>${bad.map(r => `<div class="small"><b>Bed ${esc(r.p.bed || '-')} — ${esc(r.p.name)}</b><br>⚠ ${r.miss.map(esc).join(' · ')}</div>`).join('<hr>')}<div class="row"><button class="btn gold" id="cy">Complete handover anyway</button><button class="btn ghost" id="cn">Go back</button></div>`);
-      $('#cy', m).onclick = () => { m.close(); res(true); }; $('#cn', m).onclick = () => { m.close(); res(false); }; m.onclick = e => { if (e.target === m) { m.close(); res(false); } }; });
-    if (!ok) return false;
-  }
-  await saveShift(pids, meta); return true;
+async function checkAndSave(pids, meta) { // checklist = warning only; never blocks. Re-saving the same shift replaces it (no duplicates).
+  if (shiftBusy) return false; shiftBusy = true;
+  try {
+    const bad = [], dups = [];
+    for (const pid of pids) { const p = await DB.get('patients', pid); if (!p) continue; norm(p); const miss = Parser.checklist(p, await DB.byPid('tasks', pid)).filter(x => !x.ok).map(x => x.k); if (miss.length) bad.push({ p, miss });
+      if ((await DB.byPid('shifts', pid)).some(x => x.date === meta.date && x.shift === meta.shift)) dups.push(pid); }
+    if (bad.length) {
+      const ok = await new Promise(res => { const m = modal(`<h3>Handover checklist</h3><p class="small muted">Some important information is missing. You can still complete the handover.</p>${bad.map(r => `<div class="small"><b>Bed ${esc(r.p.bed || '-')} — ${esc(r.p.name)}</b><br>⚠ ${r.miss.map(esc).join(' · ')}</div>`).join('<hr>')}<div class="row"><button class="btn gold" id="cy">Complete handover anyway</button><button class="btn ghost" id="cn">Go back</button></div>`);
+        $('#cy', m).onclick = () => { m.close(); res(true); }; $('#cn', m).onclick = () => { m.close(); res(false); }; m.onclick = e => { if (e.target === m) { m.close(); res(false); } }; });
+      if (!ok) return false;
+    }
+    if (dups.length && !confirm(`${dups.length} patient(s) already have a ${meta.shift} shift handover saved for ${meta.date}. Replace it? (No duplicate will be created)`)) return false;
+    await saveShift(pids, meta); return true;
+  } finally { shiftBusy = false; }
 }
 
-const shiftForm = () => { const l = JSON.parse(localStorage.getItem('lastShift') || '{}'); const h = new Date().getHours();
+const shiftForm = () => { const l = jget('lastShift'); const h = new Date().getHours();
   return `<div class="f2"><div><label>Shift</label><select id="sh"><option ${h >= 7 && h < 19 ? 'selected' : ''}>Day</option><option ${h >= 7 && h < 19 ? '' : 'selected'}>Night</option></select></div><div><label>Date</label><input type="date" id="sd" value="${today()}"></div>
   <div><label>Handing over (from)</label><input id="sf" value="${esc(l.to || '')}"></div><div><label>Receiving (to)</label><input id="st"></div></div>`; };
 const readShift = () => ({ shift: $('#sh').value, date: $('#sd').value, from: $('#sf').value.trim(), to: $('#st').value.trim() });
@@ -264,7 +296,7 @@ function shiftModal(pids) {
 async function handoverView() {
   const ps = (await DB.all('patients')).filter(p => p.status !== 'discharged').sort((a, b) => String(a.bed).localeCompare(String(b.bed), undefined, { numeric: true })), tc = await taskCounts();
   main().innerHTML = `<h2>Shift handover</h2><div class="card">${shiftForm()}</div><div class="card"><h3>Patients included</h3>
-  ${ps.map(p => `<label class="ck"><input type="checkbox" class="pk" value="${p.id}" checked> Bed ${esc(p.bed || '-')} — ${esc(p.name)} ${tc[p.id] ? `<span class="chip">${tc[p.id]} tasks</span>` : ''} <a href="#/p/${p.id}" class="small">open</a></label>`).join('') || '<p class="muted">No active patients.</p>'}</div>
+  ${ps.map(p => `<label class="ck"><input type="checkbox" class="pk" value="${esc(p.id)}" checked> Bed ${esc(p.bed || '-')} — ${esc(p.name)} ${tc[p.id] ? `<span class="chip">${tc[p.id]} tasks</span>` : ''} <a href="#/p/${esc(p.id)}" class="small">open</a></label>`).join('') || '<p class="muted">No active patients.</p>'}</div>
   <div class="row"><button class="btn gold" id="sv">Complete handover ✔</button><button class="btn" id="wp">Ward PDF report</button></div>`;
   const sel = () => [...document.querySelectorAll('.pk:checked')].map(c => c.value);
   $('#sv').onclick = async () => { const s = sel(); if (!s.length) return toast('Select patients'); if (await checkAndSave(s, readShift())) toast(`Saved ${s.length} handover(s)`); };
@@ -276,13 +308,13 @@ async function historyView() {
   main().innerHTML = `<h2>Shift history</h2><input id="hq" placeholder="Search patient, date, doctor"><div id="hl"></div>`;
   const draw = () => { const q = $('#hq').value.toLowerCase(); const l = all.filter(s => !q || [s.snapshot.name, s.snapshot.bed, s.date, s.shift, s.from, s.to].join(' ').toLowerCase().includes(q));
     $('#hl').innerHTML = l.map(s => `<div class="card"><b>${esc(s.snapshot.name || 'Unnamed')}</b> <span class="muted">Bed ${esc(s.snapshot.bed)}</span><div class="small muted">${esc(s.shift)} shift · ${esc(s.date)} · ${esc(s.from || '-')} → ${esc(s.to || '-')}</div><div class="small">${esc(s.snapshot.dx || '')}</div>
-    <div class="row"><button class="btn sm ghost" data-v="${s.id}">View</button><button class="btn sm" data-p="${s.id}">PDF</button><button class="btn sm red" data-d="${s.id}">Delete</button></div></div>`).join('') || '<p class="muted">No saved handovers yet.</p>'; };
+    <div class="row"><button class="btn sm ghost" data-v="${esc(s.id)}">View</button><button class="btn sm" data-p="${esc(s.id)}">PDF</button><button class="btn sm red" data-d="${esc(s.id)}">Delete</button></div></div>`).join('') || '<p class="muted">No saved handovers yet.</p>'; };
   draw(); $('#hq').oninput = draw;
   $('#hl').onclick = async e => { const t = e.target, f = id => all.find(s => s.id === id);
     if (t.dataset.p) { const s = f(t.dataset.p); reportPDF([histEntry(s)], s, `handover-${s.date}-${s.shift}.pdf`); }
     if (t.dataset.v) { const s = f(t.dataset.v), p = s.snapshot, en = histEntry(s); modal(`<h3>${esc(p.name)} — Bed ${esc(p.bed)}</h3><p class="small muted">${esc(s.shift)} · ${esc(s.date)} · ${esc(s.from)} → ${esc(s.to)}</p><p class="small">${esc(p.dx)}${p.cs ? ' · <b>' + esc(p.cs) + '</b>' : ''}<br>Allergies: ${esc(p.allergies || 'none')} · ${esc(p.code)}</p>
       ${SYSTEMS.filter(([k]) => p.h?.[k]).map(([k, l]) => `<div class="small"><b>${l}</b><br>${esc(p.h[k])}</div>`).join('')}
-      <h3>Pending tasks</h3>${en.tasks.map(x => `<div class="small">• ${esc(x.text)} (${x.priority})</div>`).join('') || '<div class="small muted">None</div>'}
+      <h3>Pending tasks</h3>${en.tasks.map(x => `<div class="small">• ${esc(x.text)} (${esc(x.priority)})</div>`).join('') || '<div class="small muted">None</div>'}
       <h3>Changes since previous shift</h3>${en.changes == null ? '<div class="small muted">No previous saved shift to compare.</div>' : en.changes.map(c => `<div class="chg"><b>${esc(c.type)}</b>: ${esc(c.text)}</div>`).join('') || '<div class="small muted">No recorded changes.</div>'}<br><button class="btn" onclick="this.closest('.modal').remove()">Close</button>`); }
     if (t.dataset.d && confirm('Delete this history entry?')) { await DB.del('shifts', t.dataset.d); route(); } };
 }
@@ -301,7 +333,7 @@ async function dashboardView() {
     const nm = p => mask() ? (p.name || '').split(/\s+/).filter(Boolean).map(w => w[0].toUpperCase() + '.').join(' ') || '—' : p.name || 'Unnamed';
     const al = ps.map(alerts), crit = al.filter(a => a.length).length;
     const stat = (t, v, c = '') => `<div class="card" style="text-align:center;margin:0"><div style="font-size:26px;font-weight:700;color:${c || 'var(--navy)'}">${v}</div><div class="small muted">${t}</div></div>`;
-    $('#dbody').innerHTML = `<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(110px,1fr));margin-bottom:12px">${stat('Active patients', ps.length)}${stat('With alerts', crit, crit ? 'var(--red)' : '')}${stat('DNAR / limited', ps.filter(p => p.code !== 'Full code').length)}${stat('Isolation', ps.filter(p => p.isolation && p.isolation !== 'None').length)}${stat('Allergies', ps.filter(p => p.allergies).length)}</div>
+    if (!$('#dbody')) return; $('#dbody').innerHTML = `<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(110px,1fr));margin-bottom:12px">${stat('Active patients', ps.length)}${stat('With alerts', crit, crit ? 'var(--red)' : '')}${stat('DNAR / limited', ps.filter(p => p.code !== 'Full code').length)}${stat('Isolation', ps.filter(p => p.isolation && p.isolation !== 'None').length)}${stat('Allergies', ps.filter(p => p.allergies).length)}</div>
     <div class="grid">${ps.map((p, i) => `<div class="card pc" style="border-left-color:${al[i].length ? 'var(--red)' : 'var(--teal)'}"><div class="bed">BED ${esc(p.bed || '-')}</div><div class="nm">${esc(nm(p))}</div><div class="small muted">${esc([p.age && p.age + 'y', p.sex].filter(Boolean).join(' · '))}</div><div class="small">${esc(p.dx || '')}</div>
       <span class="chip ${p.code !== 'Full code' ? 'red' : ''}">${esc(p.code)}</span>${p.allergies ? '<span class="chip red">Allergy</span>' : ''}${p.isolation && p.isolation !== 'None' ? `<span class="chip gray">${esc(p.isolation)}</span>` : ''}
       ${al[i].map(x => `<span class="chip red">⚠ ${esc(x)}</span>`).join('')}<div class="small muted" style="margin-top:6px">${VITALS.filter(([k]) => p.v?.[k]).map(([k, l]) => `${l} ${esc(p.v[k])}`).join(' · ')}</div>
@@ -322,7 +354,7 @@ async function scanView(pid) {
   <div class="card"><div class="row"><button class="btn" id="ocr">Run OCR</button><span class="small muted" id="st"></span></div>
   <label>Recognised / typed text (you can edit or paste text here)</label><textarea id="txt" style="min-height:140px"></textarea><div class="row"><button class="btn alt" id="ext">Extract structured data</button></div><div id="out"></div></div>
   <div class="row"><button class="btn" id="apply" disabled>Apply to patient & save</button><button class="btn ghost" id="sd">Save document only</button><button class="btn ghost" id="back">Back</button></div>`;
-  const setImg = src => { cur.canvas = toCanvas(src); cur.img = cur.canvas.toDataURL('image/jpeg', .8); $('#prev').src = cur.img; $('#prev').hidden = false; $('#vid').hidden = true; $('#snap').hidden = true; stopCam(); };
+  const setImg = src => { cur.canvas = toCanvas(src); cur.img = cur.canvas.toDataURL('image/jpeg', .7); $('#prev').src = cur.img; $('#prev').hidden = false; $('#vid').hidden = true; $('#snap').hidden = true; stopCam(); };
   $('#cam').onclick = async () => { try { stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 } }, audio: false }); const v = $('#vid'); v.srcObject = stream; await v.play(); v.hidden = false; $('#prev').hidden = true; $('#snap').hidden = false; } catch (e) { toast('Camera unavailable: use “Take / choose photo”'); } };
   $('#snap').onclick = () => setImg($('#vid'));
   $('#file').onchange = e => { const f = e.target.files[0]; if (!f) return; const im = new Image(); im.onload = () => { setImg(im); URL.revokeObjectURL(im.src); }; im.src = URL.createObjectURL(f); };
@@ -345,9 +377,9 @@ async function scanView(pid) {
   $('#sd').onclick = async () => { if (await saveDoc(false)) { toast('Document saved'); location.replace('#/p/' + pid); } };
   $('#apply').onclick = async () => {
     const old0 = JSON.parse(JSON.stringify(p)); norm(p); document.querySelectorAll('[data-g]').forEach(i => { const v = i.value.trim(); if (v) p[i.dataset.g][i.dataset.k] = v; });
-    const meds = [...document.querySelectorAll('.mk:checked')].map(c => c.value).filter(m => !(p.h.meds || '').includes(m));
+    const bad = validate(p); if (bad.length) { toast('Please check: ' + bad.join(', ')); return; } const meds = [...document.querySelectorAll('.mk:checked')].map(c => c.value).filter(m => !(p.h.meds || '').includes(m));
     if (meds.length) p.h.meds = ((p.h.meds ? p.h.meds + '\n' : '') + meds.join('\n'));
-    touch(p, old0); await DB.put('patients', p); if (await saveDoc(true)) { toast('Applied and saved'); location.replace('#/p/' + pid); }
+    touch(p, old0); await putPatient(p); if (await saveDoc(true)) { toast('Applied and saved'); location.replace('#/p/' + pid); }
   };
   $('#back').onclick = () => location.replace('#/p/' + pid);
 }
@@ -357,18 +389,33 @@ async function aboutView() {
   main().innerHTML = `<h2>About the Application</h2><div class="card"><p><b>IBN SINA ICU HANDOVER</b> is an offline-first ICU shift handover tool: patient profiles, document scanning with on-device OCR and structured extraction, shift history and PDF handover reports.</p>
   <p class="small muted">All patient data is stored only in this device’s browser database. Nothing is sent to any server. It is a documentation aid and does not replace clinical judgement or the official medical record.</p></div>
   <div class="card"><h3>Developer</h3>${credit().replace('class="credit"', 'class="credit" style="border:0"').replace(/class="dc"/g, 'class="dc" style="display:block"')}</div>
-  <div class="card"><h3>Application credits</h3><p class="small">Design, development and maintenance: <b>${DEV.name}</b><br>OCR engine (optional, bundled locally): Tesseract.js — Apache-2.0 licence.<br>Version 1.1.2</p></div>
-  <div class="card"><h3>Report settings</h3><label>Hospital name (PDF header)</label><input id="hosp" value="${esc(JSON.parse(localStorage.getItem('org') || '{}').hosp || '')}" placeholder="IBN SINA Hospital"><label>Department</label><input id="dept" value="${esc(JSON.parse(localStorage.getItem('org') || '{}').dept || '')}" placeholder="Intensive Care Unit"><div class="row"><button class="btn" id="orgs">Save</button></div></div>
-  <div class="card"><h3>Data & backup</h3><p class="small muted">${pc} patients · ${dc} documents · ${sc} handover records stored on this device.</p><div class="row"><button class="btn" id="exp">Export backup</button>
+  <div class="card"><h3>Application credits</h3><p class="small">Design, development and maintenance: <b>${DEV.name}</b><br>OCR engine (optional, bundled locally): Tesseract.js — Apache-2.0 licence.<br>Version 1.2.0</p></div>
+  <div class="card"><h3>Report settings</h3><label>Hospital name (PDF header)</label><input id="hosp" value="${esc(jget('org').hosp || '')}" placeholder="IBN SINA Hospital"><label>Department</label><input id="dept" value="${esc(jget('org').dept || '')}" placeholder="Intensive Care Unit"><div class="row"><button class="btn" id="orgs">Save</button></div></div>
+  <div class="card"><h3>Data & backup</h3><p class="small muted">${pc} patients · ${dc} documents · ${sc} handover records stored on this device. Last backup: ${localStorage.getItem('lastBackup') ? fmt(+localStorage.getItem('lastBackup')) : 'never'}.</p><div class="row"><button class="btn" id="exp">Export backup</button>
   <label class="btn ghost">Import backup<input type="file" accept=".json" id="imp" hidden></label></div><p class="small muted">Import merges records by ID and never deletes existing data. Keep backups in a safe place — they contain patient information.</p></div>`;
   $('#orgs').onclick = () => { localStorage.setItem('org', JSON.stringify({ hosp: $('#hosp').value.trim(), dept: $('#dept').value.trim() })); toast('Saved'); };
-  $('#exp').onclick = async () => { const o = { app: 'ibn-sina-icu', v: 1, ts: Date.now(), patients: await DB.all('patients'), docs: await DB.all('docs'), shifts: await DB.all('shifts'), tasks: await DB.all('tasks') }; download(JSON.stringify(o), `ibn-sina-icu-backup-${today()}.json`, 'application/json'); };
-  $('#imp').onchange = async e => { try { const o = JSON.parse(await e.target.files[0].text()); if (o.app !== 'ibn-sina-icu') throw 0; let n = 0; for (const s of ['patients', 'docs', 'shifts', 'tasks']) for (const r of o[s] || []) { await DB.put(s, r); n++; } toast(`Imported ${n} records`); route(); } catch { toast('Invalid backup file'); } };
+  $('#exp').onclick = async () => { localStorage.setItem('lastBackup', Date.now()); const o = { app: 'ibn-sina-icu', v: 1, ts: Date.now(), patients: await DB.all('patients'), docs: await DB.all('docs'), shifts: await DB.all('shifts'), tasks: await DB.all('tasks') }; download(JSON.stringify(o), `ibn-sina-icu-backup-${today()}.json`, 'application/json'); };
+  $('#imp').onchange = async e => {
+    try {
+      const f = e.target.files[0]; if (!f) return; if (f.size > 300e6) throw new Error('file too large'); const o = JSON.parse(await f.text()); if (!o || o.app !== 'ibn-sina-icu') throw new Error('not an IBN SINA backup');
+      const S = ['patients', 'tasks', 'docs', 'shifts'], idOk = v => typeof v === 'string' && /^[\w-]{1,64}$/.test(v), objOk = v => v === undefined || (v && typeof v === 'object' && !Array.isArray(v)), have = {};
+      for (const s of S) { have[s] = {}; (await DB.all(s)).forEach(r => have[s][r.id] = r); }
+      let add = 0, upd = 0, keep = 0, bad = 0;
+      for (const s of S) for (const r of (Array.isArray(o[s]) ? o[s] : [])) {
+        if (!r || !idOk(r.id) || (s !== 'patients' && !idOk(r.pid)) || (s === 'patients' && !['h', 'v', 'l', 't', 'obs'].every(k => objOk(r[k]))) || (s === 'tasks' && typeof r.text !== 'string')) { bad++; continue; }
+        const cur = have[s][r.id];
+        if (!cur) { await DB.put(s, r); add++; } else if ((s === 'patients' || s === 'tasks') && (r.updated || r.mod || 0) > (cur.updated || cur.mod || 0)) { await DB.put(s, r); upd++; } else keep++; // existing data is never replaced by older data
+      }
+      toast(`Imported ${add} new, ${upd} updated, ${keep} already up to date${bad ? ', ' + bad + ' invalid skipped' : ''}`); route();
+    } catch (err) { toast('Import failed: ' + err.message); }
+  };
 }
 
 /* ---------- router ---------- */
-async function route() {
-  stopCam(); clearInterval(dashTimer); main().onclick = null;
+let routing = Promise.resolve();
+function route() { routing = routing.then(doRoute, doRoute); return routing; } // serialised: a slow earlier render can never overwrite a newer one
+async function doRoute() {
+  stopCam(); clearInterval(dashTimer); main().onclick = null; main().oninput = main().onchange = null;
   const [v, a] = (location.hash.slice(2) || '').split('/'); const views = { '': boardView, p: profileView, scan: scanView, handover: handoverView, history: historyView, dashboard: dashboardView, about: aboutView };
   document.body.dataset.view = v || 'board'; $('#hback').hidden = !v; $('#footer').innerHTML = credit();
   document.querySelectorAll('.nav a').forEach(x => x.classList.toggle('on', x.dataset.nav === (v === 'p' || v === 'scan' || v === '' ? 'board' : v)));
@@ -380,8 +427,13 @@ async function route() {
   await DB.open();
   if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
   const upd = () => $('#offline').hidden = navigator.onLine; addEventListener('online', upd); addEventListener('offline', upd); upd();
-  addEventListener('hashchange', route); $('#hback').onclick = () => (history.length > 1 ? history.back() : go('#/'));
+  addEventListener('hashchange', () => { if (restoring) { restoring = false; return; } if (dirty && !confirm('You have unsaved changes. Leave without saving?')) { restoring = true; location.replace(lastHash); return; } dirty = false; lastHash = location.hash || '#/'; route(); });
+  addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = ''; } }); addEventListener('unhandledrejection', e => { const m = e.reason && e.reason.message; toast('Error: ' + (m && m !== 'null' ? m : 'the operation failed (device storage may be full)')); });
+  new MutationObserver(rtlFix).observe(document.body, { childList: true, subtree: true }); $('#hback').onclick = () => (history.length > 1 ? history.back() : go('#/'));
   $('#wcredit').innerHTML = credit(); $('#welcome').hidden = false; $('#enter').onclick = () => { $('#welcome').hidden = true; };
   await route();
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(e => console.warn('SW', e));
+  if ('serviceWorker' in navigator) {
+    if (isNative()) { navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister())); if (window.caches) caches.keys().then(ks => ks.forEach(k => caches.delete(k))); } // the APK ships its own files; a cache could only serve stale code
+    else navigator.serviceWorker.register('sw.js').catch(e => console.warn('SW', e));
+  }
 })();

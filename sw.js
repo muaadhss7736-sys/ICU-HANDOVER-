@@ -1,4 +1,4 @@
-const CACHE = 'ibn-sina-icu-v6';
+const CACHE = 'ibn-sina-icu-v7';
 const CORE = ['./', 'index.html', 'styles.css', 'app.js', 'parser.js', 'pdf.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png'];
 const OCR = ['vendor/tesseract/tesseract.min.js', 'vendor/tesseract/worker.min.js', 'vendor/tesseract/tesseract-core.wasm.js',
@@ -17,7 +17,7 @@ self.addEventListener('activate', e => {
 });
 self.addEventListener('fetch', e => {
   const r = e.request; if (r.method !== 'GET' || new URL(r.url).origin !== location.origin) return;
-  e.respondWith(caches.match(r, { ignoreSearch: true }).then(hit => hit || fetch(r).then(res => {
-    if (res.ok) { const cp = res.clone(); caches.open(CACHE).then(c => c.put(r, cp)); } return res;
-  }).catch(() => r.mode === 'navigate' ? caches.match('index.html') : Response.error())));
+  // network-first: updates show immediately; the cache is only the offline fallback
+  e.respondWith(fetch(r).then(res => { if (res.ok) { const cp = res.clone(); caches.open(CACHE).then(c => c.put(r, cp)); } return res; })
+    .catch(() => caches.match(r, { ignoreSearch: true }).then(hit => hit || (r.mode === 'navigate' ? caches.match('index.html') : Response.error()))));
 });
