@@ -18,16 +18,23 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 17 }
       - run: npm install
-      - name: Add OCR engine (optional - build continues if this fails)
-        continue-on-error: true
+      - name: Add OCR engine (npm first, download fallback; the build FAILS if any file is missing)
         run: |
-          npm install --no-save tesseract.js@5.1.1 @tesseract.js-data/eng
           T=www/vendor/tesseract
           mkdir -p $T/lang
-          cp node_modules/tesseract.js/dist/tesseract.min.js node_modules/tesseract.js/dist/worker.min.js $T/
-          cp node_modules/tesseract.js-core/tesseract-core*.wasm.js $T/
-          cp "$(find node_modules/@tesseract.js-data/eng -name eng.traineddata.gz | head -1)" $T/lang/eng.traineddata.gz
+          npm install --no-save tesseract.js@5.1.1 @tesseract.js-data/eng || true
+          cp node_modules/tesseract.js/dist/tesseract.min.js node_modules/tesseract.js/dist/worker.min.js $T/ 2>/dev/null || true
+          cp node_modules/tesseract.js-core/tesseract-core*.wasm.js $T/ 2>/dev/null || true
+          L=$(find node_modules/@tesseract.js-data/eng -name eng.traineddata.gz 2>/dev/null | head -1)
+          if [ -n "$L" ]; then cp "$L" $T/lang/eng.traineddata.gz; fi
+          J=https://cdn.jsdelivr.net/npm
+          for f in tesseract.min.js worker.min.js; do [ -s $T/$f ] || curl -fsSL $J/tesseract.js@5.1.1/dist/$f -o $T/$f || true; done
+          for f in tesseract-core tesseract-core-simd tesseract-core-lstm tesseract-core-simd-lstm; do [ -s $T/$f.wasm.js ] || curl -fsSL $J/tesseract.js-core@5.1.1/$f.wasm.js -o $T/$f.wasm.js || true; done
+          [ -s $T/lang/eng.traineddata.gz ] || curl -fsSL https://github.com/naptha/tessdata/raw/gh-pages/4.0.0_fast/eng.traineddata.gz -o $T/lang/eng.traineddata.gz || true
           ls -la $T $T/lang
+          for f in tesseract.min.js worker.min.js tesseract-core.wasm.js tesseract-core-simd.wasm.js tesseract-core-lstm.wasm.js tesseract-core-simd-lstm.wasm.js lang/eng.traineddata.gz; do
+            if [ ! -s $T/$f ]; then echo "::error::OCR engine file missing: $f"; exit 1; fi
+          done
       - run: npx cap add android
       - name: Set app icon
         run: |
