@@ -1,18 +1,18 @@
 /* Structured medical data extraction (runs 100% on-device) */
 (function (root) {
-  const N = '(\\d+(?:[.,]\\d+)?)';
+  const N = '(\\d+(?:[.,]\\s?\\d+)?)'; // tolerates OCR gap after the decimal point ("38. 4")
   const SEP = '\\s*[:=\\-]?\\s*';
-  const num = (t, re) => { const m = t.match(re); return m ? m[1].replace(',', '.') : null; };
+  const num = (t, re) => { const m = t.match(re); return m ? m[1].replace(',', '.').replace(/\s/g, '') : null; };
   const VITALS = {
     hr: new RegExp('\\b(?:HR|heart\\s*rate|pulse)' + SEP + '(\\d{2,3})\\b', 'i'),
     rr: new RegExp('\\b(?:RR|resp(?:iratory)?\\s*rate)' + SEP + '(\\d{1,2})\\b', 'i'),
-    spo2: new RegExp('\\b(?:SpO2|SaO2|O2\\s*sat(?:uration)?|sats?)' + SEP + '(\\d{2,3})\\b', 'i'),
-    temp: new RegExp('\\b(?:Temp(?:erature)?)' + SEP + '(\\d{2}(?:[.,]\\d)?)', 'i'),
+    spo2: new RegExp('\\b(?:Sp[O0]2|Sa[O0]2|O2\\s*sat(?:uration)?|sats?)' + SEP + '(\\d{2,3})\\b', 'i'),
+    temp: new RegExp('\\b(?:Temp(?:erature)?)' + SEP + '(\\d{2}(?:[.,]\\s?\\d)?)', 'i'),
     gcs: new RegExp('\\bGCS' + SEP + '(\\d{1,2})\\b', 'i')
   };
   const LABS = {
     Hb: '(?:Hb|Hgb|haemoglobin|hemoglobin)', WBC: '(?:WBC|TLC|white\\s*(?:blood\\s*)?cells?)',
-    Plt: '(?:Plt|platelets?)', Na: '(?:Na\\+?|sodium)', K: '(?:K\\+?|potassium)',
+    Plt: '(?:Plt|P[li1]t|platelets?)', Na: '(?:Na\\+?[lI]?|sodium)', K: '(?:K\\+?|potassium)',
     Cr: '(?:Cr|creat(?:inine)?)', Urea: '(?:urea|BUN)', Glucose: '(?:glucose|RBS|FBS|BG|GLU)',
     Lactate: '(?:lactate|lact)', pH: '(?:pH)', pCO2: '(?:pCO2|PaCO2)', pO2: '(?:pO2|PaO2)',
     HCO3: '(?:HCO3-?|bicarb(?:onate)?)', CRP: '(?:CRP)', Bili: '(?:T\\.?\\s*bil(?:irubin)?|bilirubin)',

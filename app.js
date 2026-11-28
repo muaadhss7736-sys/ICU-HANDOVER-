@@ -146,17 +146,38 @@ function pdfModal(bytes, name, text) {
 
 /* ---------- OCR ---------- */
 const loadScript = src => new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej; document.head.append(s); });
-async function runOCR(canvas, stat) {
-  if (!window.Tesseract) await loadScript('vendor/tesseract/tesseract.min.js').catch(() => {});
-  if (window.Tesseract) {
-    try {
-      const w = await Tesseract.createWorker('eng', 1, { workerPath: 'vendor/tesseract/worker.min.js', corePath: 'vendor/tesseract/', langPath: 'vendor/tesseract/lang', workerBlobURL: false, logger: m => stat(`${m.status} ${Math.round((m.progress || 0) * 100)}%`) });
-      const r = await w.recognize(canvas); await w.terminate(); return { text: r.data.text, engine: 'Tesseract (on-device)' };
-    } catch (e) { console.warn('Tesseract failed', e); }
-  }
-  if ('TextDetector' in window) { try { const r = await new TextDetector().detect(canvas); if (r.length) return { text: r.map(x => x.rawValue).join('\n'), engine: 'Browser text detector' }; } catch (e) { } }
-  return { text: '', engine: null };
+const withTimeout = (p, ms, what) => Promise.race([p, new Promise((_, rj) => setTimeout(() => rj(new Error(what + ' timed out after ' + ms / 1000 + ' s')), ms))]);
+const OCR_FILES = ['tesseract.min.js', 'worker.min.js', 'tesseract-core-simd-lstm.wasm.js', 'tesseract-core-lstm.wasm.js', 'lang/eng.traineddata.gz'];
+async function runOCR(canvas, stat) { // never swallows errors: the real reason is returned to the screen
+  const errs = [];
+  try {
+    if (!window.Tesseract) await withTimeout(loadScript('vendor/tesseract/tesseract.min.js'), 20000, 'Loading OCR script').catch(() => { throw new Error('OCR engine files are missing from this build (vendor/tesseract/tesseract.min.js not found)'); });
+    const w = await withTimeout(Tesseract.createWorker('eng', 1, { workerPath: 'vendor/tesseract/worker.min.js', corePath: 'vendor/tesseract/', langPath: 'vendor/tesseract/lang', workerBlobURL: false, logger: m => stat(`${m.status} ${Math.round((m.progress || 0) * 100)}%`) }), 90000, 'Starting the OCR engine');
+    try { const r = await withTimeout(w.recognize(canvas), 180000, 'Reading the image'); return { text: r.data.text, engine: 'Tesseract (on-device)' }; } finally { w.terminate().catch(() => { }); }
+  } catch (e) { errs.push((e && e.message) || String(e)); console.warn('OCR failed', e); }
+  if ('TextDetector' in window) { try { const r = await new TextDetector().detect(canvas); if (r.length) return { text: r.map(x => x.rawValue).join('\n'), engine: 'Browser text detector' }; } catch (e) { errs.push('TextDetector: ' + e.message); } }
+  return { text: '', engine: null, error: errs.join(' | ') };
 }
+async function ocrFilesStatus() { // is each OCR engine file really present (and not an HTML error page)?
+  const out = [];
+  for (const f of OCR_FILES) {
+    try { const r = await fetch('vendor/tesseract/' + f, { cache: 'no-store' }); if (!r.ok) { out.push({ f, ok: false, note: 'HTTP ' + r.status }); continue; }
+      const rd = r.body.getReader(), { value } = await rd.read(); rd.cancel(); const head = value ? new TextDecoder().decode(value.slice(0, 20)) : '';
+      out.push({ f, ok: !!(value && value.length) && !/^\s*</.test(head), note: (value && /^\s*</.test(head)) ? 'got an HTML page instead of the file' : Math.round((+r.headers.get('content-length') || value.length) / 1024) + ' KB' });
+    } catch (e) { out.push({ f, ok: false, note: e.message }); }
+  }
+  return out;
+}
+async function ocrDiagnose() {
+  const m = modal('<h3>OCR engine check</h3><p class="small" id="oc1">Checking engine files…</p><div id="oc2"></div><p class="small" id="oc3"></p><div class="row"><button class="btn" onclick="this.closest(\'.modal\').remove()">Close</button></div>');
+  const fs = await ocrFilesStatus(); $('#oc1', m).textContent = fs.every(x => x.ok) ? 'Engine files: all present ✔' : 'Engine files: MISSING ✖ (this build has no OCR engine)';
+  $('#oc2', m).innerHTML = fs.map(x => `<div class="small">${x.ok ? '✔' : '✖'} ${esc(x.f)} — ${esc(x.note)}</div>`).join('');
+  if (!fs.every(x => x.ok)) return; $('#oc3', m).textContent = 'Running a reading test…';
+  const c = document.createElement('canvas'); c.width = 700; c.height = 110; const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, 700, 110); g.fillStyle = '#000'; g.font = '34px Arial, sans-serif'; g.fillText('HR 112   BP 95/58   SpO2 91%', 20, 65);
+  const r = await runOCR(c, s => { $('#oc3', m).textContent = 'Reading test: ' + s; });
+  $('#oc3', m).innerHTML = r.engine ? `Reading test ${/112/.test(r.text) && /95/.test(r.text) ? 'passed ✔' : 'ran but the text looks wrong ⚠'} (${esc(r.engine)}):<br><b>${esc(r.text.trim())}</b>` : `Reading test FAILED ✖<br>${esc(r.error)}`;
+}
+
 function toCanvas(src, max = 1800) {
   const w = src.videoWidth || src.naturalWidth || src.width, h = src.videoHeight || src.naturalHeight || src.height, k = Math.min(1, max / Math.max(w, h));
   const c = document.createElement('canvas'); c.width = Math.round(w * k); c.height = Math.round(h * k); c.getContext('2d').drawImage(src, 0, 0, c.width, c.height); return c;
@@ -362,7 +383,7 @@ async function scanView(pid) {
     if (!cur.canvas) return toast('Capture or choose an image first');
     $('#st').textContent = 'Reading…'; const r = await runOCR(enhance(cur.canvas), s => $('#st').textContent = s);
     if (r.engine) { $('#txt').value = r.text; $('#st').textContent = 'Done · ' + r.engine; $('#ext').click(); }
-    else $('#st').textContent = 'OCR engine not installed (run setup_ocr.py once). Type or paste the text instead.';
+    else $('#st').textContent = 'OCR failed: ' + (r.error || 'unknown reason') + ' — type or paste the text instead (About → Check OCR engine for details).' + (isNative() ? '' : ' (Developers: run setup_ocr.py once.)');
   };
   $('#ext').onclick = () => {
     const x = cur.ext = Parser.extract($('#txt').value); const row = (g, k, v) => `<tr><td>${k}</td><td><input data-g="${g}" data-k="${k}" value="${esc(v)}"></td></tr>`;
@@ -389,10 +410,12 @@ async function aboutView() {
   main().innerHTML = `<h2>About the Application</h2><div class="card"><p><b>IBN SINA ICU HANDOVER</b> is an offline-first ICU shift handover tool: patient profiles, document scanning with on-device OCR and structured extraction, shift history and PDF handover reports.</p>
   <p class="small muted">All patient data is stored only in this device’s browser database. Nothing is sent to any server. It is a documentation aid and does not replace clinical judgement or the official medical record.</p></div>
   <div class="card"><h3>Developer</h3>${credit().replace('class="credit"', 'class="credit" style="border:0"').replace(/class="dc"/g, 'class="dc" style="display:block"')}</div>
-  <div class="card"><h3>Application credits</h3><p class="small">Design, development and maintenance: <b>${DEV.name}</b><br>OCR engine (optional, bundled locally): Tesseract.js — Apache-2.0 licence.<br>Version 1.2.0</p></div>
+  <div class="card"><h3>Application credits</h3><p class="small">Design, development and maintenance: <b>${DEV.name}</b><br>OCR engine (optional, bundled locally): Tesseract.js — Apache-2.0 licence.<br>Version 1.2.1</p></div>
   <div class="card"><h3>Report settings</h3><label>Hospital name (PDF header)</label><input id="hosp" value="${esc(jget('org').hosp || '')}" placeholder="IBN SINA Hospital"><label>Department</label><input id="dept" value="${esc(jget('org').dept || '')}" placeholder="Intensive Care Unit"><div class="row"><button class="btn" id="orgs">Save</button></div></div>
+  <div class="card"><h3>OCR engine</h3><p class="small muted">Reads English text from scanned documents on this device. If scanning does not work, check the engine here.</p><div class="row"><button class="btn alt" id="ocrchk">Check OCR engine</button></div></div>
   <div class="card"><h3>Data & backup</h3><p class="small muted">${pc} patients · ${dc} documents · ${sc} handover records stored on this device. Last backup: ${localStorage.getItem('lastBackup') ? fmt(+localStorage.getItem('lastBackup')) : 'never'}.</p><div class="row"><button class="btn" id="exp">Export backup</button>
   <label class="btn ghost">Import backup<input type="file" accept=".json" id="imp" hidden></label></div><p class="small muted">Import merges records by ID and never deletes existing data. Keep backups in a safe place — they contain patient information.</p></div>`;
+  $('#ocrchk').onclick = ocrDiagnose;
   $('#orgs').onclick = () => { localStorage.setItem('org', JSON.stringify({ hosp: $('#hosp').value.trim(), dept: $('#dept').value.trim() })); toast('Saved'); };
   $('#exp').onclick = async () => { localStorage.setItem('lastBackup', Date.now()); const o = { app: 'ibn-sina-icu', v: 1, ts: Date.now(), patients: await DB.all('patients'), docs: await DB.all('docs'), shifts: await DB.all('shifts'), tasks: await DB.all('tasks') }; download(JSON.stringify(o), `ibn-sina-icu-backup-${today()}.json`, 'application/json'); };
   $('#imp').onchange = async e => {
